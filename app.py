@@ -28,15 +28,29 @@ def get_base64_video(video_bytes, mime_type="video/mp4"):
     encoded_string = base64.b64encode(video_bytes).decode()
     return f"data:{mime_type};base64,{encoded_string}"
 
-def transcribe_with_gemini(audio_file_path):
+import subprocess # Built into Python
+
+def transcribe_with_gemini(video_file_path):
     """
-    Uses Gemini 1.5 Flash to transcribe and estimate timestamps.
-    Note: For production, consider specialized STT like Whisper for precise timings.
+    Extracts a lightweight audio file from the heavy video, 
+    and sends ONLY the audio to Gemini for lightning-fast processing.
     """
     model = genai.GenerativeModel("models/gemini-1.5-flash")
+    audio_temp_path = "temp_audio.mp3"
     
-    # Upload the file to Gemini's API
-    media_file = genai.upload_file(path=audio_file_path)
+    try:
+        # Extract audio from video using moviepy (saves massive bandwidth)
+        from moviepy.editor import VideoFileClip
+        video_clip = VideoFileClip(video_file_path)
+        video_clip.audio.write_audiofile(audio_temp_path, logger=None)
+        video_clip.close()
+        
+        # Upload ONLY the tiny audio file to Gemini's API
+        media_file = genai.upload_file(path=audio_temp_path)
+    except Exception as audio_err:
+        st.warning("Fast audio extraction failed. Falling back to uploading the full video (this will take longer)...")
+        # Fallback to uploading the whole video if moviepy hits an unexpected glitch
+        media_file = genai.upload_file(path=video_file_path)
     
     prompt = """
     Listen to this audio and provide a word-by-word transcription. 
@@ -48,8 +62,14 @@ def transcribe_with_gemini(audio_file_path):
     
     response = model.generate_content([media_file, prompt])
     
+    # Clean up the temporary audio file from the server
+    if os.path.exists(audio_temp_path):
+        try:
+            os.remove(audio_temp_path)
+        except Exception:
+            pass
+            
     try:
-        # Clean up response if it contains markdown formatting
         cleaned_json = response.text.replace('```json', '').replace('```', '').strip()
         words_data = json.loads(cleaned_json)
         return words_data
