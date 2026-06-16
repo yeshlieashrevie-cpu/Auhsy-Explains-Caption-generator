@@ -64,7 +64,7 @@ st.title("🎬 Dynamic Caption Editor")
 with st.sidebar:
     st.header("Upload Media")
     # Increases the limit for this specific uploader to 1GB (1024MB)
-uploaded_video = st.file_uploader("Upload Video (MP4)", type=["mp4"], max_upload_size=1024)
+    uploaded_video = st.file_uploader("Upload Video (MP4)", type=["mp4"], max_upload_size=1024)
     # Note: For this demo, we assume 'for captions.otf' is in the same folder.
     font_path = "for captions.otf"
 
