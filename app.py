@@ -1,8 +1,8 @@
 import streamlit as st
 import google.generativeai as genai
 import base64
-import json  # <-- ADDED: Crucial for parsing Gemini's output
-import os    # <-- ADDED: Crucial for managing the temporary video file
+import json  
+import os    
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Caption Creator", layout="wide")
@@ -27,8 +27,6 @@ def get_base64_video(video_bytes, mime_type="video/mp4"):
     """Encodes video bytes to play in the custom HTML player."""
     encoded_string = base64.b64encode(video_bytes).decode()
     return f"data:{mime_type};base64,{encoded_string}"
-
-import subprocess # Built into Python
 
 def transcribe_with_gemini(video_file_path):
     """
