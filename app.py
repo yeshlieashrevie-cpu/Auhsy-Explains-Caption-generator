@@ -3,8 +3,6 @@ import google.generativeai as genai
 import base64
 import json
 import os
-import subprocess
-import re
 import time
 
 # --- CONFIGURATION ---
@@ -27,130 +25,54 @@ def get_base64_font(font_path):
     return f"data:font/otf;base64,{encoded_string}"
 
 
-def get_video_duration(video_path):
-    """Uses ffprobe to read the exact duration of the video to calculate progress percentages."""
-    cmd = [
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", video_path
-    ]
-    try:
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        out = result.stdout.strip()
-        return float(out) if out else None
-    except Exception:
-        return None
-
-
-def extract_audio_with_progress(video_path, audio_path, progress_bar, status_text):
+def transcribe_video_via_cloud(video_file_path):
     """
-    Executes raw FFmpeg as a subprocess to extract audio.
-    Parses time out of the console output string to generate smooth progress increments.
-    """
-    duration = get_video_duration(video_path)
-    
-    # --- FALLBACK MODE (If video duration can't be parsed) ---
-    if not duration:
-        status_text.markdown("**Stage 1/2:** Extracting audio track... (Processing)")
-        progress_bar.progress(0.1)
-        
-        cmd = ["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "libmp3lame", audio_path]
-        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        # Fake a smooth crawl up to 45% while it processes on disk
-        fake_progress = 0.1
-        while process.poll() is None:
-            time.sleep(0.5)
-            if fake_progress < 0.45:
-                fake_progress += 0.02
-                progress_bar.progress(min(fake_progress, 0.45))
-                status_text.markdown(f"**Stage 1/2:** Extracting audio track... **{int(fake_progress*100)}%**")
-        return
-
-    # --- STANDARD MODE (With Real Percentage Updates) ---
-    cmd = [
-        "ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "libmp3lame",
-        "-progress", "pipe:1", audio_path
-    ]
-    
-    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    time_regex = re.compile(r"out_time_ms=(\d+)")
-    
-    while True:
-        line = process.stdout.readline()
-        if not line:
-            break
-            
-        match = time_regex.search(line)
-        if match:
-            microseconds = float(match.group(1))
-            current_seconds = microseconds / 1000000.0
-            
-            # Map completion ratio down to the first 50% of the bar
-            fraction = min(current_seconds / duration, 1.0) * 0.5
-            percentage = int(fraction * 2 * 100)
-            
-            progress_bar.progress(fraction)
-            status_text.markdown(f"**Stage 1/2:** Extracting audio track... **{percentage}%**")
-            
-    process.wait()
-
-
-def transcribe_with_gemini(video_file_path):
-    """
-    Manages background processing states and posts files to the Gemini framework.
+    Uploads the raw video directly to the Gemini File API.
+    Bypasses local computer extraction architectures to ensure stable UI tracking.
     """
     model = genai.GenerativeModel("models/gemini-1.5-flash")
-    audio_temp_path = "temp_audio.mp3"
     
+    # Establish UI placeholders
     status_text = st.empty()
-    progress_bar = st.empty()
+    progress_bar = st.progress(0.0)
     
     try:
-        status_text.markdown("**Stage 1/2:** Indexing video media boundaries...")
-        progress_bar.progress(0.0)
+        status_text.markdown("🚀 **Step 1/2:** Transporting video block to Gemini Cloud server...")
+        progress_bar.progress(0.20)
         
-        # Run optimized FFmpeg process
-        extract_audio_with_progress(video_file_path, audio_temp_path, progress_bar, status_text)
-        
-        # Gemini ingestion stage
-        progress_bar.progress(0.6)
-        status_text.markdown("**Stage 2/2:** Delivering audio packet to Gemini API... **60%**")
-        
-        media_file = genai.upload_file(path=audio_temp_path)
-        
-        progress_bar.progress(0.85)
-        status_text.markdown("**Stage 2/2:** Gemini is configuring semantic timestamp JSON... **85%**")
-        
-    except Exception as err:
-        status_text.warning("Optimized extractor skipped. Routing raw data package to API fallback container...")
+        # Fast server-to-server cloud upload
         media_file = genai.upload_file(path=video_file_path)
-    
-    prompt = """
-    Listen to this audio and provide a word-by-word transcription. 
-    You MUST output ONLY a valid JSON array of objects. 
-    Each object must have exactly three keys: "word" (the spoken word), "start" (start time in seconds as a float), and "end" (end time in seconds as a float).
-    Example: [{"word": "Hello", "start": 0.0, "end": 0.5}, {"word": "world", "start": 0.5, "end": 1.0}]
-    Do not include markdown blocks, just the raw JSON array.
-    """
-    
-    try:
+        
+        progress_bar.progress(0.55)
+        status_text.markdown("🧠 **Step 2/2:** Gemini AI is tracking video tracks and mapping timestamp JSON...")
+        
+        prompt = """
+        Listen to this audio and provide a word-by-word transcription. 
+        You MUST output ONLY a valid JSON array of objects. 
+        Each object must have exactly three keys: "word" (the spoken word), "start" (start time in seconds as a float), and "end" (end time in seconds as a float).
+        Example: [{"word": "Hello", "start": 0.0, "end": 0.5}, {"word": "world", "start": 0.5, "end": 1.0}]
+        Do not include markdown blocks, just the raw JSON array.
+        """
+        
         response = model.generate_content([media_file, prompt])
+        
         progress_bar.progress(1.0)
-        status_text.markdown("**Success!** Structural alignments completed. **100%**")
-        time.sleep(1) # Give user a second to see 100% completion
-    except Exception as api_err:
-        st.error(f"Gemini API Error: {str(api_err)}")
-        return []
-    
-    if os.path.exists(audio_temp_path):
+        status_text.markdown("✨ **Success!** Structural data pipelines aligned.")
+        time.sleep(1)
+        
+        # Clean up cloud asset after transcription
         try:
-            os.remove(audio_temp_path)
+            genai.delete_file(media_file.name)
         except Exception:
             pass
             
-    status_text.empty()
-    progress_bar.empty()
-    
+    except Exception as api_err:
+        st.error(f"Gemini API Core Error: {str(api_err)}")
+        return []
+    finally:
+        status_text.empty()
+        progress_bar.empty()
+        
     try:
         cleaned_json = response.text.replace('```json', '').replace('```', '').strip()
         words_data = json.loads(cleaned_json)
@@ -174,13 +96,29 @@ if uploaded_video:
     os.makedirs(static_dir, exist_ok=True)
     video_static_path = os.path.join(static_dir, "preview_video.mp4")
     
+    # Save file chunk by chunk to disk while displaying a dedicated saving progress bar
     if 'file_saved' not in st.session_state or st.session_state.get('last_uploaded_name') != uploaded_video.name:
-        with st.spinner("Saving video to server disk safely..."):
-            with open(video_static_path, "wb") as f:
-                while chunk := uploaded_video.read(10 * 1024 * 1024):
-                    f.write(chunk)
-            st.session_state.file_saved = True
-            st.session_state.last_uploaded_name = uploaded_video.name
+        save_progress_bar = st.progress(0.0)
+        save_status = st.empty()
+        
+        file_size = uploaded_video.size
+        bytes_written = 0
+        
+        with open(video_static_path, "wb") as f:
+            # Read and write file in 10MB increments
+            while chunk := uploaded_video.read(10 * 1024 * 1024):
+                f.write(chunk)
+                bytes_written += len(chunk)
+                fraction = min(bytes_written / file_size, 1.0)
+                save_progress_bar.progress(fraction)
+                save_status.markdown(f"💾 **Saving video to server disk:** {int(fraction * 100)}%")
+                
+        time.sleep(0.5)
+        save_progress_bar.empty()
+        save_status.empty()
+        
+        st.session_state.file_saved = True
+        st.session_state.last_uploaded_name = uploaded_video.name
 
     if "words_data" not in st.session_state:
         st.session_state.words_data = []
@@ -190,7 +128,7 @@ if uploaded_video:
     with col1:
         st.subheader("1. Generate & Edit Captions")
         if st.button("Generate Captions via Gemini"):
-            st.session_state.words_data = transcribe_with_gemini(video_static_path)
+            st.session_state.words_data = transcribe_video_via_cloud(video_static_path)
             if st.session_state.words_data:
                 st.success("🎉 Transcription complete!")
 
@@ -325,4 +263,4 @@ if uploaded_video:
             """
             st.components.v1.html(html_code, height=600)
 else:
-    st.info("Please upload a video to get started.")
+    st.info("Please upload a video to get started😁.")
