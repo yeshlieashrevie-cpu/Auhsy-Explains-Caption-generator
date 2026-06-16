@@ -1,8 +1,10 @@
 import streamlit as st
 import google.generativeai as genai
 import base64
-import json  
-import os    
+import json
+import os
+import proglog
+import subprocess
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Caption Creator", layout="wide")
@@ -28,7 +30,6 @@ def get_base64_video(video_bytes, mime_type="video/mp4"):
     encoded_string = base64.b64encode(video_bytes).decode()
     return f"data:{mime_type};base64,{encoded_string}"
 
-import proglog
 
 class StreamlitProgressLogger(proglog.ProgressBarLogger):
     """Custom logger to pipe moviepy extraction percentages directly to Streamlit."""
@@ -292,4 +293,4 @@ if uploaded_video:
             """
             st.components.v1.html(html_code, height=600)
 else:
-    st.info("Please upload a video to get started.")
+    st.info("Please upload a video to get started😋.")
