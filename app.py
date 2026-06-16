@@ -1,10 +1,7 @@
 import os
-import io
-import time
-import requests
 import streamlit as st
-from deepgram import DeepgramClient, PrerecordedOptions
-from dotenv import load_dotenv
+from deepgram import DeepgramClient, PrerecordedOptions, FileSource
+from openai import OpenAI
 
 # Load local environment variables if present
 load_dotenv()
