@@ -25,28 +25,25 @@ def get_base64_font(font_path):
         encoded_string = base64.b64encode(font_file.read()).decode()
     return f"data:font/otf;base64,{encoded_string}"
 
-def get_base64_video(video_bytes, mime_type="video/mp4"):
-    """Encodes video bytes to play in the custom HTML player."""
-    encoded_string = base64.b64encode(video_bytes).decode()
-    return f"data:{mime_type};base64,{encoded_string}"
-
 
 class StreamlitProgressLogger(proglog.ProgressBarLogger):
-    """Custom logger to pipe moviepy extraction percentages directly to Streamlit."""
+    """Custom logger to pipe moviepy extraction percentages directly to Streamlit safely."""
     def __init__(self, st_progress_bar, st_text_widget):
         super().__init__()
         self.st_bar = st_progress_bar
         self.st_text = st_text_widget
 
     def callback(self, **kwargs):
-        # Moviepy triggers this callback continuously as it processes video frames
-        if self.state.get('bars'):
-            for bar_name, bar_data in self.state['bars'].items():
-                if bar_data['total'] > 0:
-                    # Calculate actual percentage
-                    percentage = int((bar_data['index'] / bar_data['total']) * 100)
-                    self.st_bar.progress(bar_data['index'] / bar_data['total'])
-                    self.st_text.markdown(f"**Stage 1/2:** Extracting audio track... **{percentage}%**")
+        try:
+            if self.state.get('bars'):
+                for bar_name, bar_data in self.state['bars'].items():
+                    if bar_data['total'] > 0:
+                        percentage = int((bar_data['index'] / bar_data['total']) * 100)
+                        self.st_bar.progress(bar_data['index'] / bar_data['total'])
+                        self.st_text.markdown(f"**Stage 1/2:** Extracting audio track... **{percentage}%**")
+        except Exception:
+            pass  # Protect against background thread context sync issues
+
 
 def transcribe_with_gemini(video_file_path, progress_bar, status_text):
     """
@@ -60,21 +57,17 @@ def transcribe_with_gemini(video_file_path, progress_bar, status_text):
         status_text.markdown("**Stage 1/2:** Analyzing video frames...")
         from moviepy.editor import VideoFileClip
         
-        # Link our custom progress bar logger to MoviePy
         custom_logger = StreamlitProgressLogger(progress_bar, status_text)
         
         video_clip = VideoFileClip(video_file_path)
         video_clip.audio.write_audiofile(audio_temp_path, logger=custom_logger)
         video_clip.close()
         
-        # Reset progress bar for Stage 2
         progress_bar.progress(0.0)
         status_text.markdown("**Stage 2/2:** Beaming audio to Gemini API (0%)...")
         
-        # Uploading to Gemini
         media_file = genai.upload_file(path=audio_temp_path)
         
-        # Update progress to indicate API processing has started
         progress_bar.progress(0.50)
         status_text.markdown("**Stage 2/2:** Gemini is listening and building JSON timestamps (50%)...")
         
@@ -90,13 +83,14 @@ def transcribe_with_gemini(video_file_path, progress_bar, status_text):
     Do not include markdown blocks, just the raw JSON array.
     """
     
-    response = model.generate_content([media_file, prompt])
+    try:
+        response = model.generate_content([media_file, prompt])
+        progress_bar.progress(1.0)
+        status_text.markdown("**Success!** Parsing generated timestamps... (100%)")
+    except Exception as api_err:
+        st.error(f"Gemini API Error: {str(api_err)}")
+        return []
     
-    # Complete the bar
-    progress_bar.progress(1.0)
-    status_text.markdown("**Success!** Parsing generated timestamps... (100%)")
-    
-    # Clean up the server file
     if os.path.exists(audio_temp_path):
         try:
             os.remove(audio_temp_path)
@@ -111,20 +105,31 @@ def transcribe_with_gemini(video_file_path, progress_bar, status_text):
         st.error(f"Failed to parse JSON from Gemini. Raw output: {response.text}")
         return []
 
+
 # --- UI LAYOUT ---
 st.title("🎬 Dynamic Caption Editor")
 
 # Sidebar for uploads
 with st.sidebar:
     st.header("Upload Media")
-    # Increases the limit for this specific uploader to 1GB (1024MB)
     uploaded_video = st.file_uploader("Upload Video (MP4)", type=["mp4"], max_upload_size=1024)
-    # Note: For this demo, we assume 'for captions.otf' is in the same folder.
     font_path = "for captions.otf"
 
 if uploaded_video:
-    video_bytes = uploaded_video.read()
+    # Setup directory for static file serving
+    static_dir = "static"
+    os.makedirs(static_dir, exist_ok=True)
+    video_static_path = os.path.join(static_dir, "preview_video.mp4")
     
+    # MEMORY OPTIMIZATION: Stream upload to disk in chunks instead of reading all into RAM at once
+    if 'file_saved' not in st.session_state or st.session_state.get('last_uploaded_name') != uploaded_video.name:
+        with st.spinner("Saving video to server disk safely..."):
+            with open(video_static_path, "wb") as f:
+                while chunk := uploaded_video.read(10 * 1024 * 1024):  # Read in 10MB increments
+                    f.write(chunk)
+            st.session_state.file_saved = True
+            st.session_state.last_uploaded_name = uploaded_video.name
+
     if "words_data" not in st.session_state:
         st.session_state.words_data = []
 
@@ -133,29 +138,16 @@ if uploaded_video:
     with col1:
         st.subheader("1. Generate & Edit Captions")
         if st.button("Generate Captions via Gemini"):
-            # Create the placeholder visual elements for the progress tracker
             status_text = st.empty()
             progress_bar = st.progress(0.0)
             
-            # Save temp file for processing
-            temp_path = "temp_video.mp4"
-            with open(temp_path, "wb") as f:
-                f.write(video_bytes)
+            st.session_state.words_data = transcribe_with_gemini(video_static_path, progress_bar, status_text)
             
-            # Call Gemini passing our new progress placeholders
-            st.session_state.words_data = transcribe_with_gemini(temp_path, progress_bar, status_text)
-            
-            try:
-                os.remove(temp_path) # Clean up
-            except Exception:
-                pass
-            
-            # Clear out the progress bar when complete to keep the UI clean
             status_text.empty()
             progress_bar.empty()
-            st.success("🎉 Transcription complete!")
+            if st.session_state.words_data:
+                st.success("🎉 Transcription complete!")
 
-        # Allow user to manually edit words and timestamps
         if st.session_state.words_data:
             st.session_state.words_data = st.data_editor(
                 st.session_state.words_data,
@@ -167,13 +159,15 @@ if uploaded_video:
         st.subheader("2. Video Preview")
         if st.session_state.words_data and os.path.exists(font_path):
             
-            # Prepare data for HTML injection
+            # Resolve absolute server URL so the isolated component iframe can access it
+            host_domain = st.context.headers.get("host", "localhost:8501")
+            protocol = "https" if "streamlit.app" in host_domain else "http"
+            video_streaming_url = f"{protocol}://{host_domain}/static/preview_video.mp4"
+            
             b64_font = get_base64_font(font_path)
-            b64_video = get_base64_video(video_bytes)
             words_json = json.dumps(st.session_state.words_data)
             
             # --- CUSTOM HTML/JS/CSS PLAYER ---
-            # This handles the custom font, 2 colors, dark glow, and draggable boundaries
             html_code = f"""
             <!DOCTYPE html>
             <html>
@@ -189,7 +183,7 @@ if uploaded_video:
                 #video-container {{
                     position: relative;
                     width: 100%;
-                    max-width: 400px; /* Mobile aspect ratio simulation */
+                    max-width: 400px;
                     border-radius: 10px;
                     overflow: hidden;
                 }}
@@ -197,7 +191,6 @@ if uploaded_video:
                     width: 100%;
                     display: block;
                 }}
-                /* Draggable and Resizable Caption Box */
                 #caption-box {{
                     position: absolute;
                     bottom: 20%;
@@ -205,26 +198,25 @@ if uploaded_video:
                     width: 80%;
                     cursor: move;
                     text-align: center;
-                    /* Hide excess words */
                     white-space: nowrap;
                     overflow: hidden; 
                     resize: horizontal;
                     padding: 10px;
                     box-sizing: border-box;
-                    border: 1px dashed rgba(255,255,255,0.3); /* Visual guide for resizing */
+                    border: 1px dashed rgba(255,255,255,0.3);
                 }}
                 .word {{
                     font-family: 'CustomCaptionFont', sans-serif;
                     font-size: 24px;
-                    color: #B57EDC; /* Base Color */
-                    text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.9); /* Dark Glow */
+                    color: #B57EDC;
+                    text-shadow: 2px 2px 8px rgba(0, 0, 0, 0.9);
                     margin: 0 4px;
                     transition: all 0.1s ease-in-out;
                     display: inline-block;
                 }}
                 .word.active {{
-                    color: #CFFF04; /* Spoken Word Color */
-                    font-size: 32px; /* Larger Size */
+                    color: #CFFF04;
+                    font-size: 32px;
                     transform: scale(1.1);
                 }}
             </style>
@@ -232,7 +224,7 @@ if uploaded_video:
             <body>
 
             <div id="video-container">
-                <video id="vid" controls src="{b64_video}"></video>
+                <video id="vid" controls src="{video_streaming_url}"></video>
                 <div id="caption-box"></div>
             </div>
 
@@ -241,12 +233,10 @@ if uploaded_video:
                 const video = document.getElementById('vid');
                 const captionBox = document.getElementById('caption-box');
                 
-                // Dragging Logic
                 let isDragging = false;
                 let offsetX, offsetY;
 
                 captionBox.addEventListener('mousedown', (e) => {{
-                    // Prevent dragging if resizing from the right edge
                     if (e.offsetX > captionBox.clientWidth - 20) return; 
                     isDragging = true;
                     offsetX = e.clientX - captionBox.getBoundingClientRect().left;
@@ -266,16 +256,13 @@ if uploaded_video:
 
                 document.addEventListener('mouseup', () => {{ isDragging = false; }});
 
-                // Caption Syncing Logic
                 video.addEventListener('timeupdate', () => {{
                     const currentTime = video.currentTime;
                     let htmlContent = '';
                     
-                    // Define a window to keep it 1-line length (e.g., showing 5 words total)
                     let activeIndex = wordsData.findIndex(w => currentTime >= w.start && currentTime <= w.end);
                     
                     if(activeIndex !== -1) {{
-                        // Create a sliding window to hide excess words
                         let startIdx = Math.max(0, activeIndex - 2);
                         let endIdx = Math.min(wordsData.length, activeIndex + 3);
                         
@@ -293,4 +280,4 @@ if uploaded_video:
             """
             st.components.v1.html(html_code, height=600)
 else:
-    st.info("Please upload a video to get started😋.")
+    st.info("Please upload a video to get started.")
