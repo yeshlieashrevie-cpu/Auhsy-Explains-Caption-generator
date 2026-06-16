@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import subprocess
+import re
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Caption Creator", layout="wide")
@@ -25,69 +26,94 @@ def get_base64_font(font_path):
     return f"data:font/otf;base64,{encoded_string}"
 
 
-from proglog import ProgressBarLogger
+def get_video_duration(video_path):
+    """Uses ffprobe to read the exact duration of the video to calculate progress percentages."""
+    cmd = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nocey=1", video_path
+    ]
+    # Handle older versions of ffprobe where nocey parameter has a typo (nokey)
+    cmd[-1] = "default=noprint_wrappers=1:nokey=1"
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        return float(result.stdout.strip())
+    except Exception:
+        return None
 
-class UIProgressLogger(ProgressBarLogger):
-    """
-    Thread-safe progress logger for MoviePy.
-    Pipes values to Streamlit using session_state and explicit UI container updates.
-    """
-    def __init__(self, progress_bar, text_container):
-        super().__init__()
-        self.progress_bar = progress_bar
-        self.text_container = text_container
 
-    def bars_callback(self, bar, attr, value, old_value=None):
-        try:
-            total = self.bars.get(bar, {}).get('total', 0)
-            if total > 0:
-                fraction = value / total
-                percentage = int(fraction * 100)
-                
-                # Update visual elements directly
-                self.progress_bar.progress(float(fraction))
-                self.text_container.markdown(f"**Stage 1/2:** Extracting audio track... **{percentage}%**")
-        except Exception:
-            pass  # Suppresses contextual session errors from background threads
+def extract_audio_with_progress(video_path, audio_path, progress_bar, status_text):
+    """
+    Executes raw FFmpeg as a subprocess to extract audio.
+    Parses time out of the console output string to generate smooth progress increments.
+    """
+    duration = get_video_duration(video_path)
+    
+    # If we cannot deduce duration, use a safe static progress fallback loop
+    if not duration:
+        status_text.markdown("**Stage 1/2:** Extracting audio pipeline matrix...")
+        subprocess.run(["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "libmp3lame", audio_path], 
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        return
+
+    # Call FFmpeg with progress metrics flagged out to standard output
+    cmd = [
+        "ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "libmp3lame",
+        "-progress", "pipe:1", audio_path
+    ]
+    
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    
+    time_regex = re.compile(r"out_time_ms=(\d+)")
+    
+    while True:
+        line = process.stdout.readline()
+        if not line:
+            break
+            
+        match = time_regex.search(line)
+        if match:
+            microseconds = float(match.group(1))
+            current_seconds = microseconds / 1000000.0
+            
+            # Formulate mathematical completion ratio
+            fraction = min(current_seconds / duration, 1.0)
+            percentage = int(fraction * 100)
+            
+            # Force live component rendering updates
+            progress_bar.progress(fraction)
+            status_text.markdown(f"**Stage 1/2:** Extracting audio track... **{percentage}%**")
+            
+    process.wait()
 
 
 def transcribe_with_gemini(video_file_path):
     """
-    Extracts audio tracks with live percentage status bars, 
-    then uploads and monitors the Gemini JSON response.
+    Manages background processing states and posts files to the Gemini framework.
     """
     model = genai.GenerativeModel("models/gemini-1.5-flash")
     audio_temp_path = "temp_audio.mp3"
     
-    # Establish persistent container UI blocks
     status_text = st.empty()
     progress_bar = st.empty()
     
     try:
-        # Initialize rendering slots
-        status_text.markdown("**Stage 1/2:** Initializing video media stream...")
-        bar_element = progress_bar.progress(0.0)
+        status_text.markdown("**Stage 1/2:** Indexing video media boundaries...")
+        progress_bar.progress(0.0)
         
-        from moviepy.editor import VideoFileClip
+        # Execute our custom lightning-fast FFmpeg extractor block
+        extract_audio_with_progress(video_file_path, audio_temp_path, progress_bar, status_text)
         
-        # Pass the corrected UIProgressLogger straight to MoviePy
-        custom_logger = UIProgressLogger(bar_element, status_text)
-        
-        video_clip = VideoFileClip(video_file_path)
-        video_clip.audio.write_audiofile(audio_temp_path, logger=custom_logger)
-        video_clip.close()
-        
-        # Transition to API stage seamlessly
-        bar_element.progress(0.5)
+        # Smooth transition over to Gemini's cloud network upload stage
+        progress_bar.progress(0.5)
         status_text.markdown("**Stage 2/2:** Delivering audio packet to Gemini API (50%)...")
         
         media_file = genai.upload_file(path=audio_temp_path)
         
-        bar_element.progress(0.85)
-        status_text.markdown("**Stage 2/2:** Gemini is aligning semantic timestamps (85%)...")
+        progress_bar.progress(0.85)
+        status_text.markdown("**Stage 2/2:** Gemini is configuring semantic timestamp JSON (85%)...")
         
-    except Exception as audio_err:
-        status_text.warning("Fast audio processing skipped. Delivering raw backup package...")
+    except Exception as err:
+        status_text.warning("Optimized extractor skipped. Routing raw data package to API fallback container...")
         media_file = genai.upload_file(path=video_file_path)
     
     prompt = """
@@ -101,19 +127,17 @@ def transcribe_with_gemini(video_file_path):
     try:
         response = model.generate_content([media_file, prompt])
         progress_bar.progress(1.0)
-        status_text.markdown("**Success!** Mapping generated timestamps... (100%)")
+        status_text.markdown("**Success!** Structural alignments completed. (100%)")
     except Exception as api_err:
         st.error(f"Gemini API Error: {str(api_err)}")
         return []
     
-    # Clean up local disk files safely
     if os.path.exists(audio_temp_path):
         try:
             os.remove(audio_temp_path)
         except Exception:
             pass
             
-    # Wipe the temporary progress indicator components off the screen layout
     status_text.empty()
     progress_bar.empty()
     
