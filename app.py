@@ -3,7 +3,6 @@ import google.generativeai as genai
 import base64
 import json
 import os
-import proglog
 import subprocess
 
 # --- CONFIGURATION ---
@@ -26,84 +25,63 @@ def get_base64_font(font_path):
     return f"data:font/otf;base64,{encoded_string}"
 
 
-class StreamlitProgressLogger(proglog.ProgressBarLogger):
-    """Custom logger to pipe moviepy extraction percentages directly to Streamlit safely."""
-    def __init__(self, st_progress_bar, st_text_widget):
-        super().__init__()
-        self.st_bar = st_progress_bar
-        self.st_text = st_text_widget
-
-    def callback(self, **kwargs):
-        try:
-            if self.state.get('bars'):
-                for bar_name, bar_data in self.state['bars'].items():
-                    if bar_data['total'] > 0:
-                        percentage = int((bar_data['index'] / bar_data['total']) * 100)
-                        self.st_bar.progress(bar_data['index'] / bar_data['total'])
-                        self.st_text.markdown(f"**Stage 1/2:** Extracting audio track... **{percentage}%**")
-        except Exception:
-            pass  # Protect against background thread context sync issues
-
-
-def transcribe_with_gemini(video_file_path, progress_bar, status_text):
+def transcribe_with_gemini(video_file_path):
     """
-    Extracts audio with a live percentage tracker, 
-    then uploads and monitors Gemini's transcription progress.
+    Extracts audio using a stable status container, 
+    then handles Gemini transcription processing.
     """
     model = genai.GenerativeModel("models/gemini-1.5-flash")
     audio_temp_path = "temp_audio.mp3"
     
-    try:
-        status_text.markdown("**Stage 1/2:** Analyzing video frames...")
-        from moviepy.editor import VideoFileClip
-        
-        custom_logger = StreamlitProgressLogger(progress_bar, status_text)
-        
-        video_clip = VideoFileClip(video_file_path)
-        video_clip.audio.write_audiofile(audio_temp_path, logger=custom_logger)
-        video_clip.close()
-        
-        progress_bar.progress(0.0)
-        status_text.markdown("**Stage 2/2:** Beaming audio to Gemini API (0%)...")
-        
-        media_file = genai.upload_file(path=audio_temp_path)
-        
-        progress_bar.progress(0.50)
-        status_text.markdown("**Stage 2/2:** Gemini is listening and building JSON timestamps (50%)...")
-        
-    except Exception as audio_err:
-        status_text.warning("Fast audio extraction failed. Uploading the full video instead...")
-        media_file = genai.upload_file(path=video_file_path)
-    
-    prompt = """
-    Listen to this audio and provide a word-by-word transcription. 
-    You MUST output ONLY a valid JSON array of objects. 
-    Each object must have exactly three keys: "word" (the spoken word), "start" (start time in seconds as a float), and "end" (end time in seconds as a float).
-    Example: [{"word": "Hello", "start": 0.0, "end": 0.5}, {"word": "world", "start": 0.5, "end": 1.0}]
-    Do not include markdown blocks, just the raw JSON array.
-    """
-    
-    try:
-        response = model.generate_content([media_file, prompt])
-        progress_bar.progress(1.0)
-        status_text.markdown("**Success!** Parsing generated timestamps... (100%)")
-    except Exception as api_err:
-        st.error(f"Gemini API Error: {str(api_err)}")
-        return []
-    
-    if os.path.exists(audio_temp_path):
+    # Create a unified visual status block
+    with st.status("🎬 Processing Media Pipelines...", expanded=True) as status:
         try:
-            os.remove(audio_temp_path)
-        except Exception:
-            pass
+            status.update(label="Stage 1/2: Extracting audio stream from video file...", state="running")
+            from moviepy.editor import VideoFileClip
             
-    try:
-        cleaned_json = response.text.replace('```json', '').replace('```', '').strip()
-        words_data = json.loads(cleaned_json)
-        return words_data
-    except Exception as e:
-        st.error(f"Failed to parse JSON from Gemini. Raw output: {response.text}")
-        return []
+            # Using logger=None drops background thread conflicts entirely
+            video_clip = VideoFileClip(video_file_path)
+            video_clip.audio.write_audiofile(audio_temp_path, logger=None)
+            video_clip.close()
+            
+            status.update(label="Stage 2/2: Uploading audio data packet to Gemini API...", state="running")
+            media_file = genai.upload_file(path=audio_temp_path)
+            
+            status.update(label="Stage 2/2: Gemini AI is mapping word-by-word timestamps...", state="running")
+            
+        except Exception as audio_err:
+            st.warning("Fast audio extraction optimized out. Forwarding full source package...")
+            media_file = genai.upload_file(path=video_file_path)
+        
+        prompt = """
+        Listen to this audio and provide a word-by-word transcription. 
+        You MUST output ONLY a valid JSON array of objects. 
+        Each object must have exactly three keys: "word" (the spoken word), "start" (start time in seconds as a float), and "end" (end time in seconds as a float).
+        Example: [{"word": "Hello", "start": 0.0, "end": 0.5}, {"word": "world", "start": 0.5, "end": 1.0}]
+        Do not include markdown blocks, just the raw JSON array.
+        """
+        
+        try:
+            response = model.generate_content([media_file, prompt])
+            status.update(label="Success! Generating interactive caption suite...", state="complete")
+        except Exception as api_err:
+            status.update(label="Processing intercept failed.", state="error")
+            st.error(f"Gemini API Error: {str(api_err)}")
+            return []
+        
+        if os.path.exists(audio_temp_path):
+            try:
+                os.remove(audio_temp_path)
+            except Exception:
+                pass
+                
+        try:
+            cleaned_json = response.text.replace('```json', '').replace('```', '').strip()
+            words_data = json.loads(cleaned_json)
+            return words_data
+        except Exception as e:
+            st.error(f"Failed to parse JSON from Gemini. Raw output: {response.text}")
+            return []
 
 
 # --- UI LAYOUT ---
@@ -116,16 +94,14 @@ with st.sidebar:
     font_path = "for captions.otf"
 
 if uploaded_video:
-    # Setup directory for static file serving
     static_dir = "static"
     os.makedirs(static_dir, exist_ok=True)
     video_static_path = os.path.join(static_dir, "preview_video.mp4")
     
-    # MEMORY OPTIMIZATION: Stream upload to disk in chunks instead of reading all into RAM at once
     if 'file_saved' not in st.session_state or st.session_state.get('last_uploaded_name') != uploaded_video.name:
         with st.spinner("Saving video to server disk safely..."):
             with open(video_static_path, "wb") as f:
-                while chunk := uploaded_video.read(10 * 1024 * 1024):  # Read in 10MB increments
+                while chunk := uploaded_video.read(10 * 1024 * 1024):
                     f.write(chunk)
             st.session_state.file_saved = True
             st.session_state.last_uploaded_name = uploaded_video.name
@@ -138,13 +114,7 @@ if uploaded_video:
     with col1:
         st.subheader("1. Generate & Edit Captions")
         if st.button("Generate Captions via Gemini"):
-            status_text = st.empty()
-            progress_bar = st.progress(0.0)
-            
-            st.session_state.words_data = transcribe_with_gemini(video_static_path, progress_bar, status_text)
-            
-            status_text.empty()
-            progress_bar.empty()
+            st.session_state.words_data = transcribe_with_gemini(video_static_path)
             if st.session_state.words_data:
                 st.success("🎉 Transcription complete!")
 
@@ -159,7 +129,6 @@ if uploaded_video:
         st.subheader("2. Video Preview")
         if st.session_state.words_data and os.path.exists(font_path):
             
-            # Resolve absolute server URL so the isolated component iframe can access it
             host_domain = st.context.headers.get("host", "localhost:8501")
             protocol = "https" if "streamlit.app" in host_domain else "http"
             video_streaming_url = f"{protocol}://{host_domain}/static/preview_video.mp4"
@@ -280,4 +249,4 @@ if uploaded_video:
             """
             st.components.v1.html(html_code, height=600)
 else:
-    st.info("Please upload a video to get started💫🌟💫.")
+    st.info("Please upload a video to get started.")
