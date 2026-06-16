@@ -28,26 +28,57 @@ def get_base64_video(video_bytes, mime_type="video/mp4"):
     encoded_string = base64.b64encode(video_bytes).decode()
     return f"data:{mime_type};base64,{encoded_string}"
 
-def transcribe_with_gemini(video_file_path):
+import proglog
+
+class StreamlitProgressLogger(proglog.ProgressBarLogger):
+    """Custom logger to pipe moviepy extraction percentages directly to Streamlit."""
+    def __init__(self, st_progress_bar, st_text_widget):
+        super().__init__()
+        self.st_bar = st_progress_bar
+        self.st_text = st_text_widget
+
+    def callback(self, **kwargs):
+        # Moviepy triggers this callback continuously as it processes video frames
+        if self.state.get('bars'):
+            for bar_name, bar_data in self.state['bars'].items():
+                if bar_data['total'] > 0:
+                    # Calculate actual percentage
+                    percentage = int((bar_data['index'] / bar_data['total']) * 100)
+                    self.st_bar.progress(bar_data['index'] / bar_data['total'])
+                    self.st_text.markdown(f"**Stage 1/2:** Extracting audio track... **{percentage}%**")
+
+def transcribe_with_gemini(video_file_path, progress_bar, status_text):
     """
-    Extracts a lightweight audio file from the heavy video, 
-    and sends ONLY the audio to Gemini for lightning-fast processing.
+    Extracts audio with a live percentage tracker, 
+    then uploads and monitors Gemini's transcription progress.
     """
     model = genai.GenerativeModel("models/gemini-1.5-flash")
     audio_temp_path = "temp_audio.mp3"
     
     try:
-        # Extract audio from video using moviepy (saves massive bandwidth)
+        status_text.markdown("**Stage 1/2:** Analyzing video frames...")
         from moviepy.editor import VideoFileClip
+        
+        # Link our custom progress bar logger to MoviePy
+        custom_logger = StreamlitProgressLogger(progress_bar, status_text)
+        
         video_clip = VideoFileClip(video_file_path)
-        video_clip.audio.write_audiofile(audio_temp_path, logger=None)
+        video_clip.audio.write_audiofile(audio_temp_path, logger=custom_logger)
         video_clip.close()
         
-        # Upload ONLY the tiny audio file to Gemini's API
+        # Reset progress bar for Stage 2
+        progress_bar.progress(0.0)
+        status_text.markdown("**Stage 2/2:** Beaming audio to Gemini API (0%)...")
+        
+        # Uploading to Gemini
         media_file = genai.upload_file(path=audio_temp_path)
+        
+        # Update progress to indicate API processing has started
+        progress_bar.progress(0.50)
+        status_text.markdown("**Stage 2/2:** Gemini is listening and building JSON timestamps (50%)...")
+        
     except Exception as audio_err:
-        st.warning("Fast audio extraction failed. Falling back to uploading the full video (this will take longer)...")
-        # Fallback to uploading the whole video if moviepy hits an unexpected glitch
+        status_text.warning("Fast audio extraction failed. Uploading the full video instead...")
         media_file = genai.upload_file(path=video_file_path)
     
     prompt = """
@@ -60,7 +91,11 @@ def transcribe_with_gemini(video_file_path):
     
     response = model.generate_content([media_file, prompt])
     
-    # Clean up the temporary audio file from the server
+    # Complete the bar
+    progress_bar.progress(1.0)
+    status_text.markdown("**Success!** Parsing generated timestamps... (100%)")
+    
+    # Clean up the server file
     if os.path.exists(audio_temp_path):
         try:
             os.remove(audio_temp_path)
