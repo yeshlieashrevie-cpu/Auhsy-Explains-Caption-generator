@@ -132,19 +132,27 @@ if uploaded_video:
     with col1:
         st.subheader("1. Generate & Edit Captions")
         if st.button("Generate Captions via Gemini"):
-            with st.spinner("Analyzing audio..."):
-                # Save temp file for Gemini API
-                temp_path = "temp_video.mp4"
-                with open(temp_path, "wb") as f:
-                    f.write(video_bytes)
-                
-                # Call Gemini
-                st.session_state.words_data = transcribe_with_gemini(temp_path)
-                try:
-                    os.remove(temp_path) # Clean up
-                except Exception:
-                    pass
-                st.success("Transcription complete!")
+            # Create the placeholder visual elements for the progress tracker
+            status_text = st.empty()
+            progress_bar = st.progress(0.0)
+            
+            # Save temp file for processing
+            temp_path = "temp_video.mp4"
+            with open(temp_path, "wb") as f:
+                f.write(video_bytes)
+            
+            # Call Gemini passing our new progress placeholders
+            st.session_state.words_data = transcribe_with_gemini(temp_path, progress_bar, status_text)
+            
+            try:
+                os.remove(temp_path) # Clean up
+            except Exception:
+                pass
+            
+            # Clear out the progress bar when complete to keep the UI clean
+            status_text.empty()
+            progress_bar.empty()
+            st.success("🎉 Transcription complete!")
 
         # Allow user to manually edit words and timestamps
         if st.session_state.words_data:
