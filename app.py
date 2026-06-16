@@ -25,63 +25,105 @@ def get_base64_font(font_path):
     return f"data:font/otf;base64,{encoded_string}"
 
 
+from proglog import ProgressBarLogger
+
+class UIProgressLogger(ProgressBarLogger):
+    """
+    Thread-safe progress logger for MoviePy.
+    Pipes values to Streamlit using session_state and explicit UI container updates.
+    """
+    def __init__(self, progress_bar, text_container):
+        super().__init__()
+        self.progress_bar = progress_bar
+        self.text_container = text_container
+
+    def bars_callback(self, bar, attr, value, old_value=None):
+        try:
+            total = self.bars.get(bar, {}).get('total', 0)
+            if total > 0:
+                fraction = value / total
+                percentage = int(fraction * 100)
+                
+                # Update visual elements directly
+                self.progress_bar.progress(float(fraction))
+                self.text_container.markdown(f"**Stage 1/2:** Extracting audio track... **{percentage}%**")
+        except Exception:
+            pass  # Suppresses contextual session errors from background threads
+
+
 def transcribe_with_gemini(video_file_path):
     """
-    Extracts audio using a stable status container, 
-    then handles Gemini transcription processing.
+    Extracts audio tracks with live percentage status bars, 
+    then uploads and monitors the Gemini JSON response.
     """
     model = genai.GenerativeModel("models/gemini-1.5-flash")
     audio_temp_path = "temp_audio.mp3"
     
-    # Create a unified visual status block
-    with st.status("🎬 Processing Media Pipelines...", expanded=True) as status:
-        try:
-            status.update(label="Stage 1/2: Extracting audio stream from video file...", state="running")
-            from moviepy.editor import VideoFileClip
-            
-            # Using logger=None drops background thread conflicts entirely
-            video_clip = VideoFileClip(video_file_path)
-            video_clip.audio.write_audiofile(audio_temp_path, logger=None)
-            video_clip.close()
-            
-            status.update(label="Stage 2/2: Uploading audio data packet to Gemini API...", state="running")
-            media_file = genai.upload_file(path=audio_temp_path)
-            
-            status.update(label="Stage 2/2: Gemini AI is mapping word-by-word timestamps...", state="running")
-            
-        except Exception as audio_err:
-            st.warning("Fast audio extraction optimized out. Forwarding full source package...")
-            media_file = genai.upload_file(path=video_file_path)
+    # Establish persistent container UI blocks
+    status_text = st.empty()
+    progress_bar = st.empty()
+    
+    try:
+        # Initialize rendering slots
+        status_text.markdown("**Stage 1/2:** Initializing video media stream...")
+        bar_element = progress_bar.progress(0.0)
         
-        prompt = """
-        Listen to this audio and provide a word-by-word transcription. 
-        You MUST output ONLY a valid JSON array of objects. 
-        Each object must have exactly three keys: "word" (the spoken word), "start" (start time in seconds as a float), and "end" (end time in seconds as a float).
-        Example: [{"word": "Hello", "start": 0.0, "end": 0.5}, {"word": "world", "start": 0.5, "end": 1.0}]
-        Do not include markdown blocks, just the raw JSON array.
-        """
+        from moviepy.editor import VideoFileClip
         
-        try:
-            response = model.generate_content([media_file, prompt])
-            status.update(label="Success! Generating interactive caption suite...", state="complete")
-        except Exception as api_err:
-            status.update(label="Processing intercept failed.", state="error")
-            st.error(f"Gemini API Error: {str(api_err)}")
-            return []
+        # Pass the corrected UIProgressLogger straight to MoviePy
+        custom_logger = UIProgressLogger(bar_element, status_text)
         
-        if os.path.exists(audio_temp_path):
-            try:
-                os.remove(audio_temp_path)
-            except Exception:
-                pass
-                
+        video_clip = VideoFileClip(video_file_path)
+        video_clip.audio.write_audiofile(audio_temp_path, logger=custom_logger)
+        video_clip.close()
+        
+        # Transition to API stage seamlessly
+        bar_element.progress(0.5)
+        status_text.markdown("**Stage 2/2:** Delivering audio packet to Gemini API (50%)...")
+        
+        media_file = genai.upload_file(path=audio_temp_path)
+        
+        bar_element.progress(0.85)
+        status_text.markdown("**Stage 2/2:** Gemini is aligning semantic timestamps (85%)...")
+        
+    except Exception as audio_err:
+        status_text.warning("Fast audio processing skipped. Delivering raw backup package...")
+        media_file = genai.upload_file(path=video_file_path)
+    
+    prompt = """
+    Listen to this audio and provide a word-by-word transcription. 
+    You MUST output ONLY a valid JSON array of objects. 
+    Each object must have exactly three keys: "word" (the spoken word), "start" (start time in seconds as a float), and "end" (end time in seconds as a float).
+    Example: [{"word": "Hello", "start": 0.0, "end": 0.5}, {"word": "world", "start": 0.5, "end": 1.0}]
+    Do not include markdown blocks, just the raw JSON array.
+    """
+    
+    try:
+        response = model.generate_content([media_file, prompt])
+        progress_bar.progress(1.0)
+        status_text.markdown("**Success!** Mapping generated timestamps... (100%)")
+    except Exception as api_err:
+        st.error(f"Gemini API Error: {str(api_err)}")
+        return []
+    
+    # Clean up local disk files safely
+    if os.path.exists(audio_temp_path):
         try:
-            cleaned_json = response.text.replace('```json', '').replace('```', '').strip()
-            words_data = json.loads(cleaned_json)
-            return words_data
-        except Exception as e:
-            st.error(f"Failed to parse JSON from Gemini. Raw output: {response.text}")
-            return []
+            os.remove(audio_temp_path)
+        except Exception:
+            pass
+            
+    # Wipe the temporary progress indicator components off the screen layout
+    status_text.empty()
+    progress_bar.empty()
+    
+    try:
+        cleaned_json = response.text.replace('```json', '').replace('```', '').strip()
+        words_data = json.loads(cleaned_json)
+        return words_data
+    except Exception as e:
+        st.error(f"Failed to parse JSON from Gemini. Raw output: {response.text}")
+        return []
 
 
 # --- UI LAYOUT ---
