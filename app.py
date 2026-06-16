@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import re
+import time
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Caption Creator", layout="wide")
@@ -30,13 +31,12 @@ def get_video_duration(video_path):
     """Uses ffprobe to read the exact duration of the video to calculate progress percentages."""
     cmd = [
         "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nocey=1", video_path
+        "-of", "default=noprint_wrappers=1:nokey=1", video_path
     ]
-    # Handle older versions of ffprobe where nocey parameter has a typo (nokey)
-    cmd[-1] = "default=noprint_wrappers=1:nokey=1"
     try:
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        return float(result.stdout.strip())
+        out = result.stdout.strip()
+        return float(out) if out else None
     except Exception:
         return None
 
@@ -48,21 +48,31 @@ def extract_audio_with_progress(video_path, audio_path, progress_bar, status_tex
     """
     duration = get_video_duration(video_path)
     
-    # If we cannot deduce duration, use a safe static progress fallback loop
+    # --- FALLBACK MODE (If video duration can't be parsed) ---
     if not duration:
-        status_text.markdown("**Stage 1/2:** Extracting audio pipeline matrix...")
-        subprocess.run(["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "libmp3lame", audio_path], 
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        status_text.markdown("**Stage 1/2:** Extracting audio track... (Processing)")
+        progress_bar.progress(0.1)
+        
+        cmd = ["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "libmp3lame", audio_path]
+        process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # Fake a smooth crawl up to 45% while it processes on disk
+        fake_progress = 0.1
+        while process.poll() is None:
+            time.sleep(0.5)
+            if fake_progress < 0.45:
+                fake_progress += 0.02
+                progress_bar.progress(min(fake_progress, 0.45))
+                status_text.markdown(f"**Stage 1/2:** Extracting audio track... **{int(fake_progress*100)}%**")
         return
 
-    # Call FFmpeg with progress metrics flagged out to standard output
+    # --- STANDARD MODE (With Real Percentage Updates) ---
     cmd = [
         "ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "libmp3lame",
         "-progress", "pipe:1", audio_path
     ]
     
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    
     time_regex = re.compile(r"out_time_ms=(\d+)")
     
     while True:
@@ -75,11 +85,10 @@ def extract_audio_with_progress(video_path, audio_path, progress_bar, status_tex
             microseconds = float(match.group(1))
             current_seconds = microseconds / 1000000.0
             
-            # Formulate mathematical completion ratio
-            fraction = min(current_seconds / duration, 1.0)
-            percentage = int(fraction * 100)
+            # Map completion ratio down to the first 50% of the bar
+            fraction = min(current_seconds / duration, 1.0) * 0.5
+            percentage = int(fraction * 2 * 100)
             
-            # Force live component rendering updates
             progress_bar.progress(fraction)
             status_text.markdown(f"**Stage 1/2:** Extracting audio track... **{percentage}%**")
             
@@ -100,17 +109,17 @@ def transcribe_with_gemini(video_file_path):
         status_text.markdown("**Stage 1/2:** Indexing video media boundaries...")
         progress_bar.progress(0.0)
         
-        # Execute our custom lightning-fast FFmpeg extractor block
+        # Run optimized FFmpeg process
         extract_audio_with_progress(video_file_path, audio_temp_path, progress_bar, status_text)
         
-        # Smooth transition over to Gemini's cloud network upload stage
-        progress_bar.progress(0.5)
-        status_text.markdown("**Stage 2/2:** Delivering audio packet to Gemini API (50%)...")
+        # Gemini ingestion stage
+        progress_bar.progress(0.6)
+        status_text.markdown("**Stage 2/2:** Delivering audio packet to Gemini API... **60%**")
         
         media_file = genai.upload_file(path=audio_temp_path)
         
         progress_bar.progress(0.85)
-        status_text.markdown("**Stage 2/2:** Gemini is configuring semantic timestamp JSON (85%)...")
+        status_text.markdown("**Stage 2/2:** Gemini is configuring semantic timestamp JSON... **85%**")
         
     except Exception as err:
         status_text.warning("Optimized extractor skipped. Routing raw data package to API fallback container...")
@@ -127,7 +136,8 @@ def transcribe_with_gemini(video_file_path):
     try:
         response = model.generate_content([media_file, prompt])
         progress_bar.progress(1.0)
-        status_text.markdown("**Success!** Structural alignments completed. (100%)")
+        status_text.markdown("**Success!** Structural alignments completed. **100%**")
+        time.sleep(1) # Give user a second to see 100% completion
     except Exception as api_err:
         st.error(f"Gemini API Error: {str(api_err)}")
         return []
