@@ -280,4 +280,4 @@ if uploaded_video:
             """
             st.components.v1.html(html_code, height=600)
 else:
-    st.info("Please upload a video to get started.")
+    st.info("Please upload a video to get started💫🌟💫.")
