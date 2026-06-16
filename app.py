@@ -1,14 +1,19 @@
 import streamlit as st
 import google.generativeai as genai
 import base64
-import json
-import os
+import json  # <-- ADDED: Crucial for parsing Gemini's output
+import os    # <-- ADDED: Crucial for managing the temporary video file
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Caption Creator", layout="wide")
 
-# Replace with your actual API key securely in production (e.g., st.secrets)
-API_KEY = "YOUR_GEMINI_API_KEY" 
+# --- API KEY CONFIGURATION ---
+if "GEMINI_API_KEY" in st.secrets:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+else:
+    st.error("Please configure your GEMINI_API_KEY in the Streamlit Secrets.")
+    st.stop()
+
 genai.configure(api_key=API_KEY)
 
 # --- HELPER FUNCTIONS ---
@@ -81,7 +86,10 @@ if uploaded_video:
                 
                 # Call Gemini
                 st.session_state.words_data = transcribe_with_gemini(temp_path)
-                os.remove(temp_path) # Clean up
+                try:
+                    os.remove(temp_path) # Clean up
+                except Exception:
+                    pass
                 st.success("Transcription complete!")
 
         # Allow user to manually edit words and timestamps
